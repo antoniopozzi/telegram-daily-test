@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -9,7 +10,6 @@ ROMA = [12.4964, 41.9028]
 MILANO = [9.1900, 45.4642]
 
 
-# --- TELEGRAM ---
 def send_telegram_message(text: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
@@ -20,7 +20,6 @@ def send_telegram_message(text: str):
     response.raise_for_status()
 
 
-# --- API ROUTE ---
 def get_route():
     url = "https://api.openrouteservice.org/v2/directions/driving-car"
 
@@ -38,7 +37,6 @@ def get_route():
     return response.json()
 
 
-# --- FORMAT ---
 def format_duration(seconds: float) -> str:
     minutes = int(seconds // 60)
     hours = minutes // 60
@@ -50,59 +48,133 @@ def format_distance(meters: float) -> str:
     return f"{int(meters // 1000)} km"
 
 
-# --- LOGICA INTELLIGENTE ---
-def extract_main_roads(route: dict):
-    roads = []
+def normalize_label(text: str) -> str:
+    text = text.upper().strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def extract_road_refs(text: str):
+    """
+    Estrae riferimenti utili di alto livello:
+    A1, A14, E35, SSxx, SPxx, TANGENZIALE, RACCORDO, VARIANTE...
+    """
+    if not text:
+        return []
+
+    t = normalize_label(text)
+    found = []
+
+    # Riferimenti stradali veri
+    patterns = [
+        r"\bA\d+\b",
+        r"\bE\d+\b",
+        r"\bSS\d+\b",
+        r"\bSP\d+\b",
+        r"\bSR\d+\b",
+    ]
+
+    for pattern in patterns:
+        for match in re.findall(pattern, t):
+            found.append(match)
+
+    # Parole chiave macro
+    keywords = [
+        "TANGENZIALE",
+        "RACCORDO",
+        "VARIANTE DI VALICO",
+        "VARIANTE",
+        "AUTOSTRADA DEL SOLE",
+    ]
+
+    for keyword in keywords:
+        if keyword in t:
+            found.append(keyword)
+
+    return found
+
+
+def dedupe_keep_order(items):
+    out = []
     seen = set()
+
+    for item in items:
+        key = item.strip().upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item.strip())
+
+    return out
+
+
+def extract_main_route(route: dict, max_items: int = 5):
+    candidates = []
 
     for segment in route.get("segments", []):
         for step in segment.get("steps", []):
-            name = step.get("name", "").upper()
+            name = step.get("name", "") or ""
+            instruction = step.get("instruction", "") or ""
 
-            # Filtra SOLO roba importante
-            if any(x in name for x in ["A", "E", "TANGENZIALE"]):
-                clean = name.strip()
+            # Cerca prima nel nome strada, poi nell'istruzione
+            refs = extract_road_refs(name)
+            refs += extract_road_refs(instruction)
 
-                if clean and clean not in seen:
-                    seen.add(clean)
-                    roads.append(clean)
+            candidates.extend(refs)
 
-    return roads[:5]  # massimo 5
+    candidates = dedupe_keep_order(candidates)
+
+    # Piccola pulizia: se abbiamo sia A1 che AUTOSTRADA DEL SOLE, teniamo entrambi solo se utili
+    cleaned = []
+    for item in candidates:
+        if cleaned and cleaned[-1] == item:
+            continue
+        cleaned.append(item)
+
+    return cleaned[:max_items]
 
 
 def build_natural_sentence(roads):
     if not roads:
-        return "Segui l'autostrada principale (A1) fino a Milano."
+        return "Prendi il percorso principale suggerito dall'API fino a Milano."
 
     if len(roads) == 1:
-        return f"Prendi {roads[0]} e prosegui fino a destinazione."
+        return f"Prendi {roads[0]} e prosegui fino a Milano."
 
-    first = roads[0]
-    rest = ", poi ".join(roads[1:])
+    if len(roads) == 2:
+        return f"Prendi {roads[0]}, poi {roads[1]} e prosegui fino a Milano."
 
-    return f"Prendi {first}, poi {rest}."
+    middle = ", poi ".join(roads[1:-1])
+    return f"Prendi {roads[0]}, poi {middle}, poi {roads[-1]}."
 
 
-# --- MESSAGGIO ---
 def build_message(data: dict):
     route = data["routes"][0]
     summary = route["summary"]
 
     duration = format_duration(summary["duration"])
     distance = format_distance(summary["distance"])
-
-    roads = extract_main_roads(route)
+    roads = extract_main_route(route)
     sentence = build_natural_sentence(roads)
 
-    return (
-        "🚗 Roma → Milano\n\n"
-        f"Durata: {duration}\n"
-        f"Distanza: {distance}\n\n"
-        f"{sentence}"
-    )
+    lines = [
+        "🚗 Roma → Milano",
+        f"Durata: {duration}",
+        f"Distanza: {distance}",
+        "",
+        sentence
+    ]
+
+    if roads:
+        lines += [
+            "",
+            "Riepilogo:",
+            " → ".join(roads)
+        ]
+
+    return "\n".join(lines)
 
 
-# --- MAIN ---
 def main():
     data = get_route()
     message = build_message(data)
