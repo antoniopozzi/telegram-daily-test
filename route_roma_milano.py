@@ -9,6 +9,7 @@ ROMA = [12.4964, 41.9028]
 MILANO = [9.1900, 45.4642]
 
 
+# --- TELEGRAM ---
 def send_telegram_message(text: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
@@ -19,6 +20,7 @@ def send_telegram_message(text: str):
     response.raise_for_status()
 
 
+# --- API ROUTE ---
 def get_route():
     url = "https://api.openrouteservice.org/v2/directions/driving-car"
 
@@ -36,10 +38,11 @@ def get_route():
     return response.json()
 
 
+# --- FORMAT ---
 def format_duration(seconds: float) -> str:
-    total_minutes = int(seconds // 60)
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
+    minutes = int(seconds // 60)
+    hours = minutes // 60
+    minutes = minutes % 60
     return f"{hours}h {minutes}m"
 
 
@@ -47,89 +50,63 @@ def format_distance(meters: float) -> str:
     return f"{int(meters // 1000)} km"
 
 
-def clean_road_name(name: str) -> str:
-    if not name:
-        return ""
-    name = name.strip()
-    if name.lower() in {"unnamed road", "road", "-"}:
-        return ""
-    return name
-
-
-def extract_main_roads(route: dict, max_roads: int = 5):
+# --- LOGICA INTELLIGENTE ---
+def extract_main_roads(route: dict):
     roads = []
+    seen = set()
 
     for segment in route.get("segments", []):
         for step in segment.get("steps", []):
-            road_name = clean_road_name(step.get("name", ""))
+            name = step.get("name", "").upper()
 
-            # Se non c'è un nome strada utile, prova con l'istruzione
-            if not road_name:
-                instruction = step.get("instruction", "").strip()
-                if instruction:
-                    road_name = instruction
+            # Filtra SOLO roba importante
+            if any(x in name for x in ["A", "E", "TANGENZIALE"]):
+                clean = name.strip()
 
-            if not road_name:
-                continue
+                if clean and clean not in seen:
+                    seen.add(clean)
+                    roads.append(clean)
 
-            # Evita ripetizioni consecutive
-            if roads and roads[-1].lower() == road_name.lower():
-                continue
-
-            roads.append(road_name)
-
-    # Riduci il rumore: tieni solo elementi "significativi"
-    filtered = []
-    seen = set()
-
-    for road in roads:
-        key = road.lower()
-        looks_useful = any(token in road.upper() for token in ["A", "E", "SS", "SP", "SR", "TANGENZIALE"]) or len(road.split()) >= 2
-
-        if not looks_useful:
-            continue
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        filtered.append(road)
-
-        if len(filtered) >= max_roads:
-            break
-
-    return filtered
+    return roads[:5]  # massimo 5
 
 
-def build_message(data: dict) -> str:
+def build_natural_sentence(roads):
+    if not roads:
+        return "Segui l'autostrada principale (A1) fino a Milano."
+
+    if len(roads) == 1:
+        return f"Prendi {roads[0]} e prosegui fino a destinazione."
+
+    first = roads[0]
+    rest = ", poi ".join(roads[1:])
+
+    return f"Prendi {first}, poi {rest}."
+
+
+# --- MESSAGGIO ---
+def build_message(data: dict):
     route = data["routes"][0]
     summary = route["summary"]
 
     duration = format_duration(summary["duration"])
     distance = format_distance(summary["distance"])
+
     roads = extract_main_roads(route)
+    sentence = build_natural_sentence(roads)
 
-    lines = [
-        "🚗 Roma → Milano",
-        f"Durata stimata: {duration}",
-        f"Distanza: {distance}",
-        ""
-    ]
-
-    if roads:
-        lines.append("Strada consigliata:")
-        lines.append(" → ".join(roads))
-    else:
-        lines.append("Strada consigliata:")
-        lines.append("Segui il percorso principale suggerito dall'API.")
-
-    return "\n".join(lines)
+    return (
+        "🚗 Roma → Milano\n\n"
+        f"Durata: {duration}\n"
+        f"Distanza: {distance}\n\n"
+        f"{sentence}"
+    )
 
 
+# --- MAIN ---
 def main():
     data = get_route()
-    text = build_message(data)
-    send_telegram_message(text)
+    message = build_message(data)
+    send_telegram_message(message)
 
 
 if __name__ == "__main__":
