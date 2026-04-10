@@ -30,16 +30,12 @@ def get_route():
     }
 
     response = requests.post(url, json=body, headers=headers, timeout=30)
-
-    print("STATUS:", response.status_code)
-    print("RESPONSE:", response.text)
-
     response.raise_for_status()
     return response.json()
 
 def build_message(data):
-    route = data["features"][0]
-    summary = route["properties"]["summary"]
+    route = data["routes"][0]
+    summary = route["summary"]
 
     duration_minutes = int(summary["duration"] / 60)
     distance_km = int(summary["distance"] / 1000)
@@ -47,13 +43,11 @@ def build_message(data):
     hours = duration_minutes // 60
     minutes = duration_minutes % 60
 
-    text = (
+    return (
         "🚗 Roma → Milano\n\n"
-        f"Durata: {hours}h {minutes}m\n"
+        f"Durata stimata: {hours}h {minutes}m\n"
         f"Distanza: {distance_km} km"
     )
-
-    return text
 
 def main():
     data = get_route()
